@@ -1,0 +1,425 @@
+# Packages needed ====
+library(data.table)
+library(caTools)
+library(dplyr)
+library(ggplot2)
+library(rpart)
+library(rpart.plot)
+library(ggcorrplot)
+library(caret)
+library(earth)            
+library(randomForest)
+library(DescTools)
+library(car)
+library(gridExtra)
+library(rpart)
+library(rpart.plot)
+library(pROC)
+library(neuralnet)
+
+#Reading CSV files
+set.seed(2)
+trainset <- fread("S01_T4_Tiktok Virality Trainset.csv", stringsAsFactors = T)
+testset <- fread("S01_T4_Tiktok Virality Testset.csv", stringsAsFactors = T)
+summary(trainset)
+summary(testset)
+
+# Logistic Regression ====
+
+set.seed(2)
+log <- step(glm(virality ~ ., family = binomial, data = trainset), direction = "backward")
+summary(log)
+prob <- predict(log, newdata = testset)
+prob
+log.predict <- ifelse(prob > 0.5, "Yes", "No")
+log.predict
+tablel <- table(Actual = testset$virality, log.predict, deparse.level = 2)
+tablel
+round(prop.table(tablel),3)
+Acclog <- (tablel[1,1]+tablel[2,2])/sum(tablel)
+FPRlog <- tablel[1,2]/(tablel[1,2] + tablel[1,1])
+FNRlog <- tablel[2,1]/(tablel[2,1] + tablel[2,2])
+Rlog <- tablel[2,2]/(tablel[2,2] + tablel[2,1])
+Plog <- tablel[2,2]/(tablel[2,2] + tablel[1,2])
+minorityclass <- sum(testset$virality == "Yes") / nrow(testset)
+F1log <- 2 * Plog * Rlog / (Plog + Rlog)
+F1Gainlog <- (F1log - minorityclass) / (F1log *(1- minorityclass))
+
+Acclog # 0.7093426
+FPRlog # 0.1300448
+FNRlog # 0.8333333
+Rlog # 0.1666667
+Plog # 0.275
+F1log #0.2075472
+F1Gainlog #-0.1300448
+
+# Determine optimal threshold to balance sensitivity and specificity
+roc_obj_log <- roc(testset$virality, prob)
+plot(roc_obj_log)
+auc(roc_obj_log)
+coords_obj_log <- coords(roc_obj_log, "best", ret = c("threshold", "specificity", "sensitivity"))
+coords_obj_log$threshold
+log.predict_o <- ifelse(predict(log, newdata = testset) > coords_obj_log$threshold, 
+                         "Yes", "No")
+tablel2 <- table(Actual = testset$virality, log.predict_o, deparse.level = 2)
+tablel2
+round(prop.table(tablel2),3)
+Acclog2 <- (tablel2[1,1]+tablel2[2,2])/sum(tablel2)
+FPRlog2 <- tablel2[1,2]/(tablel2[1,2] + tablel2[1,1])
+FNRlog2 <- tablel2[2,1]/(tablel2[2,1] + tablel2[2,2])
+Rlog2 <- tablel2[2,2]/(tablel2[2,2] + tablel2[2,1])
+Plog2 <- tablel2[2,2]/(tablel2[2,2] + tablel2[1,2])
+F1log2 <- 2 * Plog2 * Rlog2 / (Plog2 + Rlog2)
+F1Gainlog2 <- (F1log2 - minorityclass) / (F1log2 *(1- minorityclass))
+
+Acclog2 # 0.4394464
+FPRlog2 # 0.690583
+FNRlog2 # 0.1212121
+Rlog2 # 0.8787879
+Plog2 # 0.2735849
+F1log2 #0.4172662
+F1Gainlog2 #0.5866708
+
+
+# CART ====
+
+set.seed(2)
+# Optimal CART based on 1 SE rule
+cart <- rpart(virality ~., data = trainset, method = 'class', # if is continuous, class = Annova
+                     control = rpart.control(minsplit = 2, cp = 0))
+printcp(cart)
+plotcp(cart)
+
+# Extract the Optimal Tree via code instead of eye power ------------
+# Compute min CVerror + 1SE in maximal tree cart1.
+CVerror.cap <- cart$cptable[which.min(cart$cptable[,"xerror"]), "xerror"] + 
+  cart$cptable[which.min(cart$cptable[,"xerror"]), "xstd"]
+
+# Find the optimal CP region whose CV error is just below CVerror.cap in maximal tree cart1.
+i <- 1; j<- 4
+while (cart$cptable[i,j] > CVerror.cap) {
+  i <- i + 1
+}
+
+# Get geometric mean of the two identified CP values in the optimal region if optimal tree has at least one split.
+cp.opt = ifelse(i > 1, sqrt(cart$cptable[i,1] * cart$cptable[i-1,1]), 1)
+cp.opt
+
+cart.optimal <- prune(cart, cp = cp.opt)
+printcp(cart.optimal)
+print(cart.optimal) 
+rpart.plot(cart.optimal, nn = T, main = "Optimal Tree in trainset2.bal")
+
+cart.predict <- predict(cart.optimal, newdata = testset, type = "class")
+cart.predict
+tableC <- table(Actual = testset$virality, cart.predict, deparse.level = 2)
+tableC
+round(prop.table(tableC), 3)
+Acccart <- (tableC[1,1]+tableC[2,2])/sum(tableC)
+FPRcart <- tableC[1,2]/(tableC[1,2] + tableC[1,1])
+FNRcart <- tableC[2,1]/(tableC[2,1] + tableC[2,2])
+Rcart <- tableC[2,2]/(tableC[2,2] + tableC[2,1])
+Pcart <- tableC[2,2]/(tableC[2,2] + tableC[1,2])
+F1cart <- 2 * Pcart * Rcart / (Pcart + Rcart)
+F1Gaincart <- (F1cart - minorityclass) / (F1cart *(1- minorityclass))
+
+Acccart #  0.7058824
+FPRcart # 0.2331839
+FNRcart # 0.5
+Rcart # 0.5
+Pcart # 0.3882353
+F1cart #0.4370861
+F1Gaincart # 0.6188341
+
+# Determine optimal threshold to balance sensitivity and specificity
+roc_obj_cart <- roc(testset$virality, predict(cart.optimal, newdata = testset, type = "prob")[,2])
+plot(roc_obj_cart)
+auc(roc_obj_cart)
+coords_obj_cart <- coords(roc_obj_cart, "best", ret = c("threshold", "specificity", "sensitivity"))
+coords_obj_cart$threshold
+cart.predict_o <- ifelse(predict(cart.optimal, newdata = testset, type = "prob")[,2] > coords_obj_cart$threshold, 
+                          "Yes", "No")
+tableC2 <- table(Actual = testset$virality, cart.predict_o, deparse.level = 2)
+tableC2
+round(prop.table(tableC2), 3)
+Acccart2 <- (tableC2[1,1]+tableC2[2,2])/sum(tableC2)
+FPRcart2 <- tableC2[1,2]/(tableC2[1,2] + tableC2[1,1])
+FNRcart2 <- tableC2[2,1]/(tableC2[2,1] + tableC2[2,2])
+Rcart2 <- tableC2[2,2]/(tableC2[2,2] + tableC2[2,1])
+Pcart2 <- tableC2[2,2]/(tableC2[2,2] + tableC2[1,2])
+F1cart2 <- 2 * Pcart2 * Rcart2 / (Pcart2 + Rcart2)
+F1Gaincart2 <- (F1cart2 - minorityclass) / (F1cart2 *(1- minorityclass))
+
+Acccart2 # 0.7404844
+FPRcart2 # 0.1838565
+FNRcart2 # 0.5151515
+Rcart2 # 0.4848485
+Pcart2 # 0.4383562
+F1cart2 # 0.4604317
+F1Gaincart2 # 0.653167
+
+# Random Forest ====
+
+set.seed(2)
+summary(trainset)
+RF_Parameter_Table <- data.frame(B = c(25, 25, 25, 25, 100, 100, 100, 100, 500, 500, 500, 500),
+                                  RSFsize = c(1, 3, 5, 7, 1, 3, 5, 7, 1, 3, 5, 7),
+                                  OOB_error = 1:12)
+RF_Parameter_Table$OOB_error <- NA
+RF_Parameter_Table <- data.frame(lapply(RF_Parameter_Table, as.numeric))
+
+# Run the Random Forest through the different parameters
+set.seed(2)
+for (i in 1:nrow(RF_Parameter_Table)) {
+  rf <- randomForest(virality ~ ., data = trainset, 
+                      ntree = RF_Parameter_Table$B[i], 
+                      mtry = RF_Parameter_Table$RSFsize[i],
+                      na.action = na.omit)
+  RF_Parameter_Table$OOB_error[i] <- rf$err.rate[nrow(rf$err.rate), "OOB"]
+}
+
+RF_Parameter_Table
+
+rf2 <- randomForest(virality ~ ., data = trainset, 
+                    ntree = 500, 
+                    mtry = 1,
+                    na.action = na.omit)
+plot(rf2)
+
+predictions_rf <- predict(rf2, newdata = testset)
+predictions_rf
+tablerf <- table(Actual = testset$virality, predictions_rf, deparse.level = 2)
+tablerf
+round(prop.table(tablerf),3)
+Accrf <- (tablerf[1,1]+tablerf[2,2])/sum(tablerf)
+FPRrf <- tablerf[1,2]/(tablerf[1,2] + tablerf[1,1])
+FNRrf <- tablerf[2,1]/(tablerf[2,1] + tablerf[2,2])
+Rrf <- tablerf[2,2]/(tablerf[2,2] + tablerf[2,1])
+Prf <- tablerf[2,2]/(tablerf[2,2] + tablerf[1,2])
+F1rf <- 2 * Prf * Rrf / (Prf + Rrf)
+F1Gainrf <- (F1rf - minorityclass) / (F1rf *(1- minorityclass))
+
+FPRrf # 0.06278027
+FNRrf # 0.6060606
+Accrf # 0.8131488
+Rrf # 0.3939394
+Prf # 0.65
+F1rf #0.490566
+F1Gainrf #0.6926526
+
+# Determine optimal threshold to balance sensitivity and specificity
+roc_obj_rf <- roc(testset$virality, predict(rf2, newdata = testset, type = "prob")[,2])
+plot(roc_obj_rf)
+auc(roc_obj_rf)
+coords_obj_rf <- coords(roc_obj_rf, "best", ret = c("threshold", "specificity", "sensitivity"))
+coords_obj_rf$threshold
+predictions_rfo <- ifelse(predict(rf2, newdata = testset, type = "prob")[,2] > coords_obj_rf$threshold, 
+                      "Yes", "No")
+tablerf2 <- table(Actual = testset$virality, predictions_rfo, deparse.level = 2)
+tablerf2
+round(prop.table(tablerf),3)
+Accrf2 <- (tablerf2[1,1]+tablerf2[2,2])/sum(tablerf2)
+FPRrf2 <- tablerf2[1,2]/(tablerf2[1,2] + tablerf2[1,1])
+FNRrf2 <- tablerf2[2,1]/(tablerf2[2,1] + tablerf2[2,2])
+Rrf2 <- tablerf2[2,2]/(tablerf2[2,2] + tablerf2[2,1])
+Prf2 <- tablerf2[2,2]/(tablerf2[2,2] + tablerf2[1,2])
+F1rf2 <- 2 * Prf2 * Rrf2 / (Prf2 + Rrf2)
+F1Gainrf2 <- (F1rf2 - minorityclass) / (F1rf2 *(1- minorityclass)) 
+
+FPRrf2 # 0.1121076
+FNRrf2 # 0.5151515
+Accrf2 # 0.7958478
+Rrf2 # 0.4848485
+Prf2 # 0.5614035
+F1rf2 #0.5203252
+F1Gainrf2 #0.7271581
+
+# MARS ====
+
+# Fit the MARS model with all variables
+mars_model <- earth(virality ~ ., data = trainset,degree=1,trace=3)
+summary <- summary(mars_model)
+summary
+summary$namesx
+
+ev <- evimp(mars_model, trim=FALSE)
+plot(ev)
+print(ev)
+
+mars.predict <- predict(mars_model, newdata = testset)
+mars.predict
+threshold <- 0.5
+mars.predict <- ifelse(mars.predict > threshold, "Yes","No")
+table.mars <- table(Actual = testset$virality, mars.predict, deparse.level = 2)
+table.mars
+Accm <- (table.mars[1,1]+table.mars[2,2])/sum(table.mars)
+FNRm <- table.mars[2,1]/(table.mars[2,1] + table.mars[2,2])
+FPRm <- table.mars[1,2]/(table.mars[1,2] + table.mars[1,1])
+Rm <- table.mars[2,2]/(table.mars[2,2] + table.mars[2,1])
+Pm <- table.mars[2,2]/(table.mars[2,2] + table.mars[1,2])
+F1m <- 2 * Pm * Rm / (Pm + Rm)
+F1Gainm<- (F1m - minorityclass) / (F1m *(1- minorityclass)) 
+
+Accm # 0.5570934
+FNRm # 0.5454545
+FPRm # 0.4125561
+Rm # 0.4545455
+Pm # 0.2459016
+F1m #0.3191489
+F1Gainm #0.3686099
+
+# Determine optimal threshold to balance sensitivity and specificity
+roc_obj_m <- roc(testset$virality, predict(mars_model, newdata = testset))
+plot(roc_obj_m)
+auc(roc_obj_m)
+coords_obj_m <- coords(roc_obj_m, "best", ret = c("threshold", "specificity", "sensitivity"))
+coords_obj_m$threshold
+predictions_mo <- ifelse(predict(mars_model, newdata = testset) > coords_obj_m$threshold, 
+                          "Yes", "No")
+table.mars2 <- table(Actual = testset$virality, predictions_mo, deparse.level = 2)
+table.mars2
+round(prop.table(table.mars2),3)
+Accm2 <- (table.mars2[1,1]+table.mars2[2,2])/sum(table.mars2)
+FPRm2 <- table.mars2[1,2]/(table.mars2[1,2] + table.mars2[1,1])
+FNRm2 <- table.mars2[2,1]/(table.mars2[2,1] + table.mars2[2,2])
+Rm2 <- table.mars2[2,2]/(table.mars2[2,2] + table.mars2[2,1])
+Pm2 <- table.mars2[2,2]/(table.mars2[2,2] + table.mars2[1,2])
+F1m2 <- 2 * Pm2 * Rm2 / (Pm2 + Rm2)
+F1Gainm2 <- (F1m2 - minorityclass) / (F1m2 *(1- minorityclass)) 
+
+FPRm2 # 0.573991
+FNRm2 # 0.3333333
+Accm2 # 0.4809689
+Rm2 # 0.6666667
+Pm2 # 0.255814
+F1m2 #0.3697479
+F1Gainm2 #0.4955157
+
+# Neural Network ====
+
+#Create neural network model
+nn <- neuralnet(virality ~ ., data=trainset,hidden = c(5),stepmax=1e6)
+# Plot the neural network model
+plot(nn)
+
+# Make predictions on the testing data
+predictions_nn <- predict(nn, testset)
+predictions_nn
+
+# Convert the probabilities to predicted class labels based on the highest probability
+predictions_nn <- apply(predictions_nn, 1, function(x) {
+  levels(testset$virality)[which.max(x)]
+})
+predictions_nn <- factor(predictions_nn)
+predictions_nn
+
+tablenn <- table(Actual = testset$virality, predictions_nn, deparse.level = 2)
+tablenn
+round(prop.table(tablenn),3)
+Accnn <- (tablenn[1,1]+tablenn[2,2])/sum(tablenn)
+FPRnn <- tablenn[1,2]/(tablenn[1,2] + tablenn[1,1])
+FNRnn <- tablenn[2,1]/(tablenn[2,1] + tablenn[2,2])
+Rnn <- tablenn[2,2]/(tablenn[2,2] + tablenn[2,1])
+Pnn <- tablenn[2,2]/(tablenn[2,2] + tablenn[1,2])
+F1nn <- 2 * Pnn * Rnn / (Pnn + Rnn)
+F1Gainnn <- (F1nn - minorityclass) / (F1nn *(1- minorityclass)) 
+
+FPRnn # 0.4349776
+FNRnn # 0.4848485
+Accnn # 0.5536332
+Rnn # 0.5151515
+Pnn # 0.259542
+F1nn #0.3451777
+F1Gainnn #0.4385386
+
+# Determine optimal threshold to balance sensitivity and specificity
+roc_obj_nn <- roc(testset$virality, predict(nn, testset)[,2])
+plot(roc_obj_nn)
+auc(roc_obj_nn)
+coords_obj_nn <- coords(roc_obj_nn, "best", ret = c("threshold", "specificity", "sensitivity"))
+coords_obj_nn$threshold
+predictions_nno <- ifelse(predict(nn, testset)[,2] > coords_obj_nn$threshold, 
+                         "Yes", "No")
+table.nn2 <- table(Actual = testset$virality, predictions_nno, deparse.level = 2)
+table.nn2
+round(prop.table(table.nn2),3)
+Accnn2 <- (table.nn2[1,1]+table.nn2[2,2])/sum(table.nn2)
+FPRnn2 <- table.nn2[1,2]/(table.nn2[1,2] + table.nn2[1,1])
+FNRnn2 <- table.nn2[2,1]/(table.nn2[2,1] + table.nn2[2,2])
+Rnn2 <- table.nn2[2,2]/(table.nn2[2,2] + table.nn2[2,1])
+Pnn2 <- table.nn2[2,2]/(table.nn2[2,2] + table.nn2[1,2])
+F1nn2<- 2 * Pnn2 * Rnn2 / (Pnn2 + Rnn2)
+F1Gainnn2 <- (F1nn2 - minorityclass) / (F1nn2 *(1- minorityclass)) 
+
+FPRnn2 # 0.3811659
+FNRnn2 # 0.4848485
+Accnn2 # 0.5951557
+Rnn2 # 0.5151515
+Pnn2 # 0.2857143
+F1nn2 #0.3675676
+F1Gainnn2 #0.4907676
+
+# Compare Performance Metrics Before & After Tuning ====
+
+before_table <- data.frame(Model = c("Logistic Regression", "CART", "Random Forest", "MARS", "Neural Network"),
+                          Accuracy = c(Acclog, Acccart, Accrf, Accm, Accnn),
+                          False_Positive_Rate = c(FPRlog, FPRcart, FPRrf, FPRm, FPRnn),
+                          False_Negative_Rate = c(FNRlog, FNRcart, FNRrf, FNRm, FNRnn),
+                          Precision = c(Plog, Pcart, Prf, Pm, Pnn),
+                          Recall = c(Rlog, Rcart, Rrf, Rm, Rnn),
+                          F1 = c(F1log, F1cart, F1rf, F1m, F1nn),
+                          F1Gain = c(F1Gainlog, F1Gaincart, F1Gainrf, F1Gainm, F1Gainnn))
+                        
+View(before_table)
+
+final_table <- data.frame(Model = c("Logistic Regression", "CART", "Random Forest", "MARS", "Neural Network"),
+                           Accuracy = c(Acclog2, Acccart2, Accrf2, Accm2, Accnn2),
+                           False_Positive_Rate = c(FPRlog2, FPRcart2, FPRrf2, FPRm2, FPRnn2),
+                           False_Negative_Rate = c(FNRlog2, FNRcart2, FNRrf2, FNRm2, FNRnn2),
+                           Precision = c(Plog2, Pcart2, Prf2, Pm2, Pnn2),
+                           Recall = c(Rlog2, Rcart2, Rrf2, Rm2, Rnn2), 
+                          F1 = c(F1log2, F1cart2, F1rf2, F1m2, F1nn2),
+                          F1Gain = c(F1Gainlog2, F1Gaincart2, F1Gainrf2, F1Gainm2, F1Gainnn2))
+
+                          
+View(final_table)
+
+
+
+# Tuned Random Forest ====
+
+# Lower the decision threshold to increase sensitivity
+tuned_threshold_rf <- 0.3
+tuned_predictions_rf <- ifelse(predict(rf2, newdata = testset, type = "prob")[,2] > tuned_threshold_rf, 
+                               "Yes", "No")
+tablerf3 <- table(Actual = testset$virality, tuned_predictions_rf, deparse.level = 2)
+tablerf3
+round(prop.table(tablerf3),3)
+Accrf3 <- (tablerf3[1,1]+tablerf3[2,2])/sum(tablerf3)
+FPRrf3 <- tablerf3[1,2]/(tablerf3[1,2] + tablerf3[1,1])
+FNRrf3 <- tablerf3[2,1]/(tablerf3[2,1] + tablerf3[2,2])
+Rrf3 <- tablerf3[2,2]/(tablerf3[2,2] + tablerf3[2,1])
+Prf3 <- tablerf3[2,2]/(tablerf3[2,2] + tablerf3[1,2])
+F1rf3 <- 2 * Prf3 * Rrf3 / (Prf3 + Rrf3)
+F1Gainrf3 <- (F1rf3 - minorityclass) / (F1rf3 *(1- minorityclass))
+
+FPRrf3 # 0.1659193
+FNRrf3 # 0.4393939
+Accrf3 # 0.7716263
+Rrf3 # 0.5606061
+Prf3 # 0.5
+F1rf3 # 0.4673913
+F1Gainrf3 # 0.6627386
+
+
+# Produce Table
+tuned_table <- data.frame(Model = c("Random Forest", "Random Forest Tuned"),
+                          Accuracy = c(Accrf2, Accrf3), 
+                          False_Positive_Rate = c(FPRrf2,FPRrf3),
+                          False_Negative_Rate = c(FNRrf2,FNRrf3), 
+                          Precision = c(Prf2,Prf3),
+                          Recall = c(Rrf2,Rrf3),
+                          F1 = c(F1rf2, F1rf3),
+                          F1Gain = c(F1Gainrf2, F1Gainrf3))
+View(tuned_table)
+
